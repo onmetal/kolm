@@ -24,14 +24,8 @@ type API struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Certs     APICerts     `json:"certs"`
 	ETCD      APIETCD      `json:"etcd"`
 	APIServer APIAPIServer `json:"apiServer"`
-}
-
-type APICerts struct {
-	CommonName   string   `json:"commonName"`
-	Organization []string `json:"organization"`
 }
 
 type APIETCD struct {

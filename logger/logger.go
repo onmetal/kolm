@@ -24,14 +24,17 @@ import (
 )
 
 func NewLogger(w io.Writer, verbosity int) logr.Logger {
-	l := &logger{
+	return logr.New(NewSink(w, verbosity))
+}
+
+func NewSink(w io.Writer, verbosity int) logr.LogSink {
+	return &sink{
 		w:         w,
 		verbosity: verbosity,
 	}
-	return logr.New(l)
 }
 
-type logger struct {
+type sink struct {
 	w         io.Writer
 	verbosity int
 
@@ -39,18 +42,18 @@ type logger struct {
 	values []interface{}
 }
 
-func (l logger) Init(info logr.RuntimeInfo) {}
+func (s sink) Init(info logr.RuntimeInfo) {}
 
-func (l logger) Enabled(level int) bool {
-	return l.verbosity >= level
+func (s sink) Enabled(level int) bool {
+	return s.verbosity >= level
 }
 
 var bold = color.New(color.Bold)
 
-func (l logger) write(msg string, keysAndValues []interface{}, err error) {
+func (s sink) write(msg string, keysAndValues []interface{}, err error) {
 	var sb strings.Builder
-	if l.prefix != "" {
-		_, _ = bold.Fprint(&sb, l.prefix)
+	if s.prefix != "" {
+		_, _ = bold.Fprint(&sb, s.prefix)
 		sb.WriteString(": ")
 	}
 	sb.WriteString(msg)
@@ -74,30 +77,30 @@ func (l logger) write(msg string, keysAndValues []interface{}, err error) {
 	}
 	_, _ = fmt.Fprintln(&sb)
 
-	_, _ = fmt.Fprint(l.w, sb.String())
+	_, _ = fmt.Fprint(s.w, sb.String())
 }
 
-func (l logger) Info(level int, msg string, keysAndValues ...interface{}) {
-	l.write(msg, keysAndValues, nil)
+func (s sink) Info(level int, msg string, keysAndValues ...interface{}) {
+	s.write(msg, keysAndValues, nil)
 }
 
-func (l logger) Error(err error, msg string, keysAndValues ...interface{}) {
-	l.write(msg, keysAndValues, err)
+func (s sink) Error(err error, msg string, keysAndValues ...interface{}) {
+	s.write(msg, keysAndValues, err)
 }
 
-func (l logger) WithValues(keysAndValues ...interface{}) logr.LogSink {
-	newValues := make([]interface{}, len(l.values), len(l.values)+len(keysAndValues))
-	copy(newValues, l.values)
-	copy(newValues[len(l.values):], keysAndValues)
-	l.values = newValues
-	return &l
+func (s sink) WithValues(keysAndValues ...interface{}) logr.LogSink {
+	newValues := make([]interface{}, len(s.values), len(s.values)+len(keysAndValues))
+	copy(newValues, s.values)
+	copy(newValues[len(s.values):], keysAndValues)
+	s.values = newValues
+	return &s
 }
 
-func (l logger) WithName(name string) logr.LogSink {
-	if l.prefix == "" {
-		l.prefix = name
+func (s sink) WithName(name string) logr.LogSink {
+	if s.prefix == "" {
+		s.prefix = name
 	} else {
-		l.prefix = fmt.Sprintf("%s.%s", l.prefix, name)
+		s.prefix = fmt.Sprintf("%s.%s", s.prefix, name)
 	}
-	return l
+	return s
 }

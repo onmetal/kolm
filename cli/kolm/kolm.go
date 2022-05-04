@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 
 	kolm "github.com/onmetal/kolm"
+	"github.com/onmetal/kolm/cli/kolm/apply"
 	"github.com/onmetal/kolm/cli/kolm/common"
 	"github.com/onmetal/kolm/cli/kolm/create"
 	"github.com/onmetal/kolm/cli/kolm/delete"
@@ -35,7 +36,7 @@ var (
 )
 
 func init() {
-	if kolmRootDir := os.Getenv("LOCAL_API_ROOT_DIR"); kolmRootDir != "" {
+	if kolmRootDir := os.Getenv("KOLM_ROOT_DIR"); kolmRootDir != "" {
 		defaultKolmRootDir = kolmRootDir
 	} else {
 		dirname, err := os.UserHomeDir()
@@ -55,6 +56,7 @@ func Command() *cobra.Command {
 	getKolm := newGetKolm(&kolmRootDir)
 
 	cmd.AddCommand(
+		apply.Command(getKolm),
 		create.Command(getKolm),
 		delete.Command(getKolm),
 		get.Command(getKolm),
@@ -73,10 +75,6 @@ func newGetKolm(kolmRootDir *string) common.GetKolm {
 		dir := *kolmRootDir
 		if dir == "" {
 			return nil, fmt.Errorf("must specify kolm-root-dir")
-		}
-
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return nil, fmt.Errorf("error initializing kolm-root-dir at %s: %w", dir, err)
 		}
 
 		return kolm.New(dir)

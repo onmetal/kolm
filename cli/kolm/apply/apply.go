@@ -12,25 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package export
+package apply
 
 import (
 	"fmt"
 
+	"github.com/onmetal/kolm/cli/kolm/apply/apiservices"
 	"github.com/onmetal/kolm/cli/kolm/common"
-	hostcert "github.com/onmetal/kolm/cli/kolm/export/host-cert"
-	"github.com/onmetal/kolm/cli/kolm/export/kubeconfig"
 	"github.com/spf13/cobra"
 )
 
 func Command(getKolm common.GetKolm) *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "export",
+		Use: "apply",
 	}
 
 	subCommands := []*cobra.Command{
-		kubeconfig.Command(getKolm),
-		hostcert.Command(getKolm),
+		apiservices.Command(getKolm),
 	}
 	names := make([]string, 0, len(subCommands))
 	for _, subCommand := range subCommands {
@@ -38,7 +36,7 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 		names = append(names, subCommand.Name())
 	}
 
-	cmd.Short = fmt.Sprintf("Exports one of %v", names)
+	cmd.Short = fmt.Sprintf("Applies one of %v", names)
 
 	return cmd
 }

@@ -19,6 +19,9 @@ import (
 
 	"github.com/onmetal/kolm/cli/kolm/common"
 	"github.com/onmetal/kolm/cli/kolm/get/apis"
+	etcdaddress "github.com/onmetal/kolm/cli/kolm/get/etcd-address"
+	hostkey "github.com/onmetal/kolm/cli/kolm/get/host-cert"
+	hostcert "github.com/onmetal/kolm/cli/kolm/get/host-key"
 	"github.com/onmetal/kolm/cli/kolm/get/kubeconfig"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +34,9 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 	subCommands := []*cobra.Command{
 		apis.Command(getKolm),
 		kubeconfig.Command(getKolm),
+		etcdaddress.Command(getKolm),
+		hostkey.Command(getKolm),
+		hostcert.Command(getKolm),
 	}
 	names := make([]string, 0, len(subCommands))
 	for _, subCommand := range subCommands {

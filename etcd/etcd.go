@@ -77,8 +77,6 @@ func createCmd(opts Options) (*exec.Cmd, error) {
 		"--logger", "zap",
 		"--advertise-client-urls", address,
 		"--listen-client-urls", address,
-		"--initial-cluster", fmt.Sprintf("default=%s", peerAddress),
-		"--initial-advertise-peer-urls", peerAddress,
 		"--listen-peer-urls", peerAddress,
 	)
 	if err != nil {

@@ -28,9 +28,6 @@ import (
 type Options struct {
 	Name string
 
-	CertificateCommonName   string
-	CertificateOrganization []string
-
 	APIServerHost       string
 	APIServerSecurePort int32
 
@@ -40,9 +37,6 @@ type Options struct {
 
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api to create.")
-
-	fs.StringVar(&o.CertificateCommonName, "certificate-common-name", "test", "Common name to use for all certificates.")
-	fs.StringSliceVar(&o.CertificateOrganization, "certificate-organization", []string{"test"}, "Organization to use for all certificates.")
 
 	fs.StringVar(&o.APIServerHost, "apiserver-host", "", "Host to run the api server on. If unspecified, localhost will be used.")
 	fs.Int32Var(&o.APIServerSecurePort, "apiserver-port", 0, "Port to run the api server on. If unspecified, a dynamic port will be allocated.")
@@ -77,14 +71,10 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
 	kubeconfigFilename := common.DetermineKubeconfig(opts.Kubeconfig)
 
-	return kolm.Run(ctx, k,
+	return kolm.RunAPI(ctx, k.APIs(),
 		&v1alpha1.API{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: opts.Name,
-			},
-			Certs: v1alpha1.APICerts{
-				CommonName:   opts.CertificateCommonName,
-				Organization: opts.CertificateOrganization,
 			},
 			ETCD: v1alpha1.APIETCD{},
 			APIServer: v1alpha1.APIAPIServer{
@@ -92,7 +82,7 @@ func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
 				Port: opts.APIServerSecurePort,
 			},
 		},
-		kolm.RunOptions{
+		kolm.RunAPIOptions{
 			Remove:             opts.Remove,
 			KubeconfigFilename: kubeconfigFilename,
 		},

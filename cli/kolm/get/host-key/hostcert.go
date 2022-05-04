@@ -12,45 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package apis
+package hostcert
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 
-	kolm "github.com/onmetal/kolm"
-	"github.com/onmetal/kolm/api/v1alpha1/helper"
+	"github.com/onmetal/kolm"
 	"github.com/onmetal/kolm/cli/kolm/common"
-	"github.com/onmetal/kolm/tableconvertor"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"k8s.io/cli-runtime/pkg/printers"
 )
 
 type Options struct {
-	Output outputFormat
+	Name string
 }
 
-type outputFormat string
-
-const (
-	outputFormatJSON    outputFormat = "json"
-	outputFormatYAML    outputFormat = "yaml"
-	outputFormatDefault outputFormat = ""
-)
-
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVarP((*string)(&o.Output), "format", "o", string(outputFormatDefault), "Output format to print the items in. One of json, yaml or \"\" (default format).")
+	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api to get the host certificate from.")
 }
 
 func Command(getKolm common.GetKolm) *cobra.Command {
 	var opts Options
 
 	cmd := &cobra.Command{
-		Use:   "apis",
-		Short: "List existing local Kubernetes apis by their name.",
+		Use:   "host-cert",
+		Short: "Get the host certificate location on-disk of an api.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -68,28 +55,12 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 	return cmd
 }
 
-var tablePrinter = printers.NewTablePrinter(printers.PrintOptions{})
-
 func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
-	res, err := k.APIs().List(ctx)
+	hostCertFilename, err := k.APIs().HostCertificateFilename(ctx, opts.Name)
 	if err != nil {
-		return fmt.Errorf("error listing: %w", err)
+		return fmt.Errorf("error getting host certificate of %s: %w", opts.Name, err)
 	}
 
-	switch opts.Output {
-	case outputFormatDefault:
-		tab, err := tableconvertor.ConvertAPIToTable(res)
-		if err != nil {
-			return err
-		}
-		return tablePrinter.PrintObj(tab, os.Stdout)
-	case outputFormatJSON:
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(res)
-	case outputFormatYAML:
-		return helper.Codec.Encode(res, os.Stdout)
-	default:
-		return fmt.Errorf("invalid format %q", opts.Output)
-	}
+	fmt.Print(hostCertFilename)
+	return nil
 }

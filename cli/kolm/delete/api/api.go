@@ -20,17 +20,20 @@ import (
 
 	kolm "github.com/onmetal/kolm"
 	"github.com/onmetal/kolm/cli/kolm/common"
+	"github.com/onmetal/kolm/kubeconfigs"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type Options struct {
-	Name string
+	Name       string
+	Kubeconfig string
 }
 
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api to delete.")
+	fs.StringVar(&o.Kubeconfig, "kubeconfig", "", "The kubeconfig file to modify instead of KUBECONFIG or HOME/.kube/config.")
 }
 
 func Command(getKolm common.GetKolm) *cobra.Command {
@@ -56,11 +59,17 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 	return cmd
 }
 
-func Run(ctx context.Context, l kolm.Kolm, opts Options) error {
+func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	if err := l.Delete(ctx, opts.Name); err != nil {
+	kubeconfig := common.DetermineKubeconfig(opts.Kubeconfig)
+
+	if err := k.APIs().Delete(ctx, opts.Name); err != nil {
 		return fmt.Errorf("error deleting %s: %w", opts.Name, err)
+	}
+
+	if err := kubeconfigs.PruneFile(kubeconfig, opts.Name); err != nil {
+		log.Error(err, "Error pruning kubeconfig")
 	}
 
 	log.Info("Successfully deleted", "Name", opts.Name)

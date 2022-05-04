@@ -30,21 +30,19 @@ import (
 type Options struct {
 	Name string
 
-	CertificateCommonName   string
-	CertificateOrganization []string
-
 	APIServerHost       string
 	APIServerSecurePort int32
+
+	Kubeconfig string
 }
 
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api to create.")
 
-	fs.StringVar(&o.CertificateCommonName, "certificate-common-name", "test", "Common name to use for all certificates.")
-	fs.StringSliceVar(&o.CertificateOrganization, "certificate-organization", []string{"test"}, "Organization to use for all certificates.")
-
 	fs.StringVar(&o.APIServerHost, "apiserver-host", "", "Host to run the api server on. If unspecified, localhost will be used.")
 	fs.Int32Var(&o.APIServerSecurePort, "apiserver-port", 0, "Port to run the api server on. If unspecified, a dynamic port will be allocated.")
+
+	fs.StringVar(&o.Kubeconfig, "kubeconfig", "", "The kubeconfig file to modify instead of KUBECONFIG or HOME/.kube/config.")
 }
 
 func Command(getKolm common.GetKolm) *cobra.Command {
@@ -70,16 +68,14 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 	return cmd
 }
 
-func Run(ctx context.Context, l kolm.Kolm, opts Options) error {
+func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	res, err := l.Create(ctx, &v1alpha1.API{
+	kubeconfig := common.DetermineKubeconfig(opts.Kubeconfig)
+
+	api, err := k.APIs().Create(ctx, &v1alpha1.API{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: opts.Name,
-		},
-		Certs: v1alpha1.APICerts{
-			CommonName:   opts.CertificateCommonName,
-			Organization: opts.CertificateOrganization,
 		},
 		ETCD: v1alpha1.APIETCD{},
 		APIServer: v1alpha1.APIAPIServer{
@@ -91,6 +87,10 @@ func Run(ctx context.Context, l kolm.Kolm, opts Options) error {
 		return fmt.Errorf("error creating api: %w", err)
 	}
 
-	log.Info("Successfully created api", "Name", res.Name)
+	if err := kolm.ExportKubeconfigFile(ctx, k.APIs(), api.Name, kubeconfig); err != nil {
+		log.Error(err, "Could not export api", "Name", api.Name)
+	}
+
+	log.Info("Successfully created api", "Name", api.Name)
 	return nil
 }

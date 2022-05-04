@@ -19,6 +19,7 @@ import (
 
 	"github.com/onmetal/kolm/cli/kolm/common"
 	"github.com/onmetal/kolm/cli/kolm/delete/api"
+	"github.com/onmetal/kolm/cli/kolm/delete/apiservices"
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +30,7 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 
 	subCommands := []*cobra.Command{
 		api.Command(getKolm),
+		apiservices.Command(getKolm),
 	}
 	names := make([]string, 0, len(subCommands))
 	for _, subCommand := range subCommands {

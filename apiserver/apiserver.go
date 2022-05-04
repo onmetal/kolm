@@ -28,11 +28,15 @@ type Options struct {
 	Command []string
 	Dir     string
 
-	ETCDServers        []string
-	ServerCertPairName string
+	ETCDServers                []string
+	ServerCertPairName         string
+	CAPairName                 string
+	ServiceAccountCertPairName string
+	ProxyCAPairName            string
+	ProxyClientPairName        string
 
-	Host       string
-	SecurePort int32
+	Host string
+	Port int32
 
 	Stdout io.Writer
 	Stderr io.Writer
@@ -73,9 +77,32 @@ func Start(opts Options) (*APIServer, error) {
 func createCommand(opts Options) (*exec.Cmd, error) {
 	cmd, err := process.Command(opts.Command,
 		"--etcd-servers", strings.Join(opts.ETCDServers, ","),
+
+		"--client-ca-file", opts.CAPairName+".crt",
+
 		"--tls-cert-file", opts.ServerCertPairName+".crt",
 		"--tls-private-key-file", opts.ServerCertPairName+".key",
-		fmt.Sprintf("--secure-port=%d", opts.SecurePort),
+
+		"--service-account-key-file", opts.ServiceAccountCertPairName+".crt",
+		"--service-account-signing-key-file", opts.ServiceAccountCertPairName+".key",
+		"--service-account-issuer", fmt.Sprintf("https://%s:%d", opts.Host, opts.Port),
+
+		fmt.Sprintf("--secure-port=%d", opts.Port),
+
+		"--authorization-mode", "RBAC",
+
+		"--service-cluster-ip-range", "10.0.0.0/24",
+		"--allow-privileged",
+		"--disable-admission-plugins", "ServiceAccount",
+
+		"--proxy-client-key-file", opts.ProxyClientPairName+".key",
+		"--proxy-client-cert-file", opts.ProxyClientPairName+".crt",
+
+		"--requestheader-client-ca-file", opts.ProxyCAPairName+".crt",
+		"--requestheader-allowed-names", "kolm,localhost",
+		"--requestheader-extra-headers-prefix", "X-Remote-Extra-",
+		"--requestheader-group-headers", "X-Remote-Group",
+		"--requestheader-username-headers", "X-Remote-User",
 	)
 	if err != nil {
 		return nil, err
@@ -88,5 +115,5 @@ func createCommand(opts Options) (*exec.Cmd, error) {
 }
 
 func createReadyFunc(opts Options) process.ReadyFunc {
-	return process.InsecureHTTPGetOKReadyCheck(fmt.Sprintf("https://%s:%d/readyz", opts.Host, opts.SecurePort))
+	return process.InsecureHTTPGetOKReadyCheck(fmt.Sprintf("https://%s:%d/readyz", opts.Host, opts.Port))
 }

@@ -18,7 +18,7 @@ import (
 	"os"
 	"path/filepath"
 
-	kolm "github.com/onmetal/kolm"
+	"github.com/onmetal/kolm"
 	"k8s.io/client-go/tools/clientcmd"
 )
 

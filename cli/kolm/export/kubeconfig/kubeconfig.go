@@ -58,8 +58,8 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 	return cmd
 }
 
-func Run(ctx context.Context, l kolm.Kolm, opts Options) error {
+func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
 	kubeconfig := common.DetermineKubeconfig(opts.Kubeconfig)
 
-	return kolm.ExportFile(ctx, l, opts.Name, kubeconfig)
+	return kolm.ExportKubeconfigFile(ctx, k.APIs(), opts.Name, kubeconfig)
 }

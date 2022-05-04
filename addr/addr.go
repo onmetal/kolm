@@ -50,8 +50,8 @@ func (p *PortCache) Start() error {
 	p.done = make(chan struct{})
 	p.requests = make(chan request)
 	p.releases = make(chan release)
-	p.wg.Add(1)
 
+	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		p.loop()
@@ -197,15 +197,12 @@ func (p *Port) Release() error {
 	return p.release()
 }
 
-func (p *PortCache) trySendRequest(listenHost string) (chan result, error) {
+func (p *PortCache) trySendRequest(ctx context.Context, listenHost string) (chan result, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.started {
 		return nil, fmt.Errorf("not started")
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
 
 	result := make(chan result, 1)
 
@@ -218,20 +215,20 @@ func (p *PortCache) trySendRequest(listenHost string) (chan result, error) {
 }
 
 func (p *PortCache) Suggest(listenHost string) (*Port, error) {
-	result, err := p.trySendRequest(listenHost)
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
+	result, err := p.trySendRequest(ctx, listenHost)
+	if err != nil {
+		return nil, fmt.Errorf("error sending request: %w", err)
+	}
+
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("timeout suggesting: %w", ctx.Err())
 	case res := <-result:
 		if err := res.err; err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error suggesting: %w", err)
 		}
 
 		return &Port{res.port, res.ip, res.release}, nil

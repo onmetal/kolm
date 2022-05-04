@@ -12,33 +12,49 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package export
+package apiservices
 
 import (
-	"fmt"
+	"context"
 
+	"github.com/onmetal/kolm"
 	"github.com/onmetal/kolm/cli/kolm/common"
-	hostcert "github.com/onmetal/kolm/cli/kolm/export/host-cert"
-	"github.com/onmetal/kolm/cli/kolm/export/kubeconfig"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
+type Options struct {
+	APIName string
+	Name    string
+}
+
+func (o *Options) AddFlags(fs *pflag.FlagSet) {
+	fs.StringVarP(&o.APIName, "api-name", "a", kolm.DefaultName, "Name of the api whose API services to modify.")
+	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the service owner to create.")
+}
+
 func Command(getKolm common.GetKolm) *cobra.Command {
+	var opts Options
+
 	cmd := &cobra.Command{
-		Use: "export",
+		Use: "apiservices",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			k, err := getKolm()
+			if err != nil {
+				return err
+			}
+
+			return Run(ctx, k, opts)
+		},
 	}
 
-	subCommands := []*cobra.Command{
-		kubeconfig.Command(getKolm),
-		hostcert.Command(getKolm),
-	}
-	names := make([]string, 0, len(subCommands))
-	for _, subCommand := range subCommands {
-		cmd.AddCommand(subCommand)
-		names = append(names, subCommand.Name())
-	}
-
-	cmd.Short = fmt.Sprintf("Exports one of %v", names)
+	opts.AddFlags(cmd.Flags())
 
 	return cmd
+}
+
+func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
+	return k.APIs().APIServices(opts.APIName).Delete(ctx, opts.Name)
 }

@@ -163,7 +163,7 @@ func Start(cmd *exec.Cmd, readyFunc ReadyFunc, opts Options) (*Process, error) {
 	case <-timeout.C:
 		cancelPoll()
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		return nil, fmt.Errorf("timed out waiting for process to start")
+		return nil, fmt.Errorf("timed out waiting for process to become ready")
 	case <-ready:
 		return srv, nil
 	}

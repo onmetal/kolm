@@ -34,24 +34,53 @@ import (
 	"github.com/onmetal/kolm/etcd"
 	"github.com/onmetal/kolm/kubeconfigs"
 	"github.com/onmetal/kolm/logger"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/util/cert"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
+	apisDir = "apis"
+
 	manifestName       = "kolm.yaml"
 	certsDirectoryName = "certs"
 
-	caPairName         = "ca"
-	serverPairName     = "server"
-	kubeconfigPairName = "client"
+	caPairName             = "ca"
+	serverPairName         = "server"
+	serviceAccountPairName = "sa"
+	proxyCAPairName        = "proxy-ca"
+	proxyClientPairName    = "proxy-client"
+	kubeconfigPairName     = "client"
+	hostCAPairName         = "host-ca"
+	hostPairName           = "host"
+
+	fieldOwner = client.FieldOwner("kolm.onmetal.de/kolm")
+
+	serviceOwnerLabel = "kolm.onmetal.de/service-owner"
 )
 
+var (
+	commonName   = "kolm"
+	organization = []string{"kolm"}
+)
+
+func init() {
+	_ = apiregistrationv1.AddToScheme(scheme.Scheme)
+}
+
 type Kolm interface {
+	APIs() APIs
+}
+
+type APIs interface {
 	List(ctx context.Context) (*v1alpha1.APIList, error)
 	Get(ctx context.Context, name string) (*v1alpha1.API, error)
 	Create(ctx context.Context, api *v1alpha1.API) (*v1alpha1.API, error)
@@ -59,19 +88,34 @@ type Kolm interface {
 
 	Start(ctx context.Context, name string) (Handle, error)
 	Kubeconfig(ctx context.Context, name string) (*clientcmdapi.Config, error)
+	APIServices(name string) APIServices
+	HostCertificate(ctx context.Context, name string) (*certutil.Pair, error)
+
+	HostKeyFilename(ctx context.Context, name string) (string, error)
+	HostCertificateFilename(ctx context.Context, name string) (string, error)
+}
+
+type APIServices interface {
+	Apply(ctx context.Context, svcName, host string, port int32, apiServices []*apiregistrationv1.APIService) error
+	Delete(ctx context.Context, svcName string) error
 }
 
 type kolm struct {
 	dir string
 }
 
+func (k *kolm) apisDir() string {
+	return filepath.Join(k.dir, apisDir)
+}
+
 func New(dir string) (Kolm, error) {
-	stat, err := os.Stat(dir)
-	if err != nil {
-		return nil, fmt.Errorf("error stat-ing %s: %w", dir, err)
+	k := &kolm{dir}
+
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("error creating directory at %s: %w", dir, err)
 	}
-	if !stat.IsDir() {
-		return nil, fmt.Errorf("file at %s is not a directory", dir)
+	if err := os.MkdirAll(k.apisDir(), 0700); err != nil {
+		return nil, fmt.Errorf("error creating apis directory at %s: %w", k.apisDir(), err)
 	}
 
 	return &kolm{
@@ -79,10 +123,20 @@ func New(dir string) (Kolm, error) {
 	}, nil
 }
 
-func (k *kolm) List(ctx context.Context) (*v1alpha1.APIList, error) {
+type apis struct {
+	dir string
+}
+
+func (k *kolm) APIs() APIs {
+	return &apis{
+		dir: k.apisDir(),
+	}
+}
+
+func (a *apis) List(ctx context.Context) (*v1alpha1.APIList, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	entries, err := os.ReadDir(k.dir)
+	entries, err := os.ReadDir(a.dir)
 	if err != nil {
 		return nil, fmt.Errorf("error reading base directory: %w", err)
 	}
@@ -90,7 +144,7 @@ func (k *kolm) List(ctx context.Context) (*v1alpha1.APIList, error) {
 	var items []v1alpha1.API
 	for _, entry := range entries {
 		if entry.IsDir() {
-			item, err := k.Get(ctx, entry.Name())
+			item, err := a.Get(ctx, entry.Name())
 			if err != nil {
 				if !apierrors.IsNotFound(err) {
 					log.Error(err, "Error getting item", "Name", entry.Name())
@@ -110,36 +164,56 @@ func (k *kolm) List(ctx context.Context) (*v1alpha1.APIList, error) {
 	}, nil
 }
 
-func (k *kolm) itemDirectory(name string) string {
-	return filepath.Join(k.dir, name)
+func (a *apis) itemDirectory(name string) string {
+	return filepath.Join(a.dir, name)
 }
 
-func (k *kolm) itemCertsDirectory(name string) string {
-	return filepath.Join(k.itemDirectory(name), certsDirectoryName)
+func (a *apis) itemCertsDirectory(name string) string {
+	return filepath.Join(a.itemDirectory(name), certsDirectoryName)
 }
 
-func (k *kolm) itemManifestFilename(name string) string {
-	return filepath.Join(k.itemDirectory(name), manifestName)
+func (a *apis) itemManifestFilename(name string) string {
+	return filepath.Join(a.itemDirectory(name), manifestName)
 }
 
-func (k *kolm) itemCAPairName(name string) string {
-	return filepath.Join(k.itemCertsDirectory(name), caPairName)
+func (a *apis) itemCAPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), caPairName)
 }
 
-func (k *kolm) itemServerPairName(name string) string {
-	return filepath.Join(k.itemCertsDirectory(name), serverPairName)
+func (a *apis) itemServerPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), serverPairName)
 }
 
-func (k *kolm) itemKubeconfigPairName(name string) string {
-	return filepath.Join(k.itemCertsDirectory(name), kubeconfigPairName)
+func (a *apis) itemServiceAccountPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), serviceAccountPairName)
 }
 
-func (k *kolm) Get(ctx context.Context, name string) (*v1alpha1.API, error) {
+func (a *apis) itemProxyCAPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), proxyCAPairName)
+}
+
+func (a *apis) itemProxyClientPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), proxyClientPairName)
+}
+
+func (a *apis) itemKubeconfigPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), kubeconfigPairName)
+}
+
+func (a *apis) itemHostCAPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), hostCAPairName)
+}
+
+func (a *apis) itemHostPairName(name string) string {
+	return filepath.Join(a.itemCertsDirectory(name), hostPairName)
+}
+
+func (a *apis) Get(ctx context.Context, name string) (*v1alpha1.API, error) {
 	if name == "" {
 		return nil, fmt.Errorf("must specify name")
 	}
 
-	item, err := helper.ReadAPIFile(k.itemManifestFilename(name))
+	item, err := helper.ReadAPIFile(a.itemManifestFilename(name))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("error reading api file: %w", err)
@@ -150,8 +224,8 @@ func (k *kolm) Get(ctx context.Context, name string) (*v1alpha1.API, error) {
 	return item, nil
 }
 
-func (k *kolm) checkExists(ctx context.Context, name string) (bool, error) {
-	_, err := k.Get(ctx, name)
+func (a *apis) checkExists(ctx context.Context, name string) (bool, error) {
+	_, err := a.Get(ctx, name)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return false, fmt.Errorf("error checking whether %s exists: %w", name, err)
@@ -161,19 +235,19 @@ func (k *kolm) checkExists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-func (k *kolm) initCertificates(name string, certs v1alpha1.APICerts) error {
-	if err := os.Mkdir(k.itemCertsDirectory(name), 0700); err != nil {
+func (a *apis) initCertificates(name string) error {
+	if err := os.Mkdir(a.itemCertsDirectory(name), 0700); err != nil {
 		return fmt.Errorf("error creating certificate directory: %w", err)
 	}
 
-	caPair, err := certutil.GenerateSelfSignedCA(certs.CommonName, certs.Organization)
+	caPair, err := certutil.GenerateSelfSignedCA(commonName, organization)
 	if err != nil {
-		return fmt.Errorf("error generating self-signed ca: %w", err)
+		return fmt.Errorf("error generating ca: %w", err)
 	}
 
 	serverPair, err := certutil.GenerateCertificate(caPair, cert.Config{
-		CommonName:   certs.CommonName,
-		Organization: certs.Organization,
+		CommonName:   commonName,
+		Organization: organization,
 		AltNames: cert.AltNames{
 			DNSNames: []string{"localhost"},
 			IPs:      []net.IP{net.ParseIP("127.0.0.1")},
@@ -184,18 +258,79 @@ func (k *kolm) initCertificates(name string, certs v1alpha1.APICerts) error {
 		return fmt.Errorf("error generating server certificate: %w", err)
 	}
 
-	if err := certutil.WritePairFiles(caPair, k.itemCAPairName(name)); err != nil {
+	serviceAccountPair, err := certutil.GenerateSelfSignedCA(commonName, organization)
+	if err != nil {
+		return fmt.Errorf("error generating service account certificate: %w", err)
+	}
+
+	proxyCAPair, err := certutil.GenerateSelfSignedCA(commonName, organization)
+	if err != nil {
+		return fmt.Errorf("error generating proxy ca: %w", err)
+	}
+
+	proxyClientPair, err := certutil.GenerateCertificate(proxyCAPair, cert.Config{
+		CommonName:   commonName,
+		Organization: organization,
+		AltNames: cert.AltNames{
+			DNSNames: []string{"localhost"},
+			IPs:      []net.IP{net.ParseIP("127.0.0.1")},
+		},
+		Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("error generating proxy client certificate: %w", err)
+	}
+
+	hostSvcCAPair, err := certutil.GenerateSelfSignedCA(commonName, organization)
+	if err != nil {
+		return fmt.Errorf("error generating host ca: %w", err)
+	}
+
+	hostSvcPair, err := certutil.GenerateCertificate(hostSvcCAPair, cert.Config{
+		CommonName:   commonName,
+		Organization: organization,
+		AltNames: cert.AltNames{
+			DNSNames: []string{"localhost", "*.kube-system.svc"},
+			IPs:      []net.IP{net.ParseIP("127.0.0.1")},
+		},
+		Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("error generating host certificate: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(caPair, a.itemCAPairName(name)); err != nil {
 		return fmt.Errorf("error writing ca files: %w", err)
 	}
 
-	if err := certutil.WritePairFiles(serverPair, k.itemServerPairName(name)); err != nil {
+	if err := certutil.WritePairFiles(serverPair, a.itemServerPairName(name)); err != nil {
 		return fmt.Errorf("error writing server files: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(serviceAccountPair, a.itemServiceAccountPairName(name)); err != nil {
+		return fmt.Errorf("error writing service account files: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(proxyCAPair, a.itemProxyCAPairName(name)); err != nil {
+		return fmt.Errorf("error writing proxy ca: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(proxyClientPair, a.itemProxyClientPairName(name)); err != nil {
+		return fmt.Errorf("error writing proxy client files: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(hostSvcCAPair, a.itemHostCAPairName(name)); err != nil {
+		return fmt.Errorf("error writing host ca pair name: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(hostSvcPair, a.itemHostPairName(name)); err != nil {
+		return fmt.Errorf("error writing host pair name: %w", err)
 	}
 
 	return nil
 }
 
-func (k *kolm) suggestPorts(api *v1alpha1.API) error {
+func (a *apis) suggestPorts(api *v1alpha1.API) error {
 	pc := addr.NewPortCache()
 	if err := pc.Start(); err != nil {
 		return err
@@ -235,7 +370,7 @@ func (k *kolm) suggestPorts(api *v1alpha1.API) error {
 	return nil
 }
 
-func (k *kolm) Create(ctx context.Context, api *v1alpha1.API) (*v1alpha1.API, error) {
+func (a *apis) Create(ctx context.Context, api *v1alpha1.API) (*v1alpha1.API, error) {
 	if api == nil {
 		return nil, fmt.Errorf("must specify api")
 	}
@@ -243,11 +378,11 @@ func (k *kolm) Create(ctx context.Context, api *v1alpha1.API) (*v1alpha1.API, er
 		return nil, fmt.Errorf("must specify name")
 	}
 
-	if err := k.suggestPorts(api); err != nil {
+	if err := a.suggestPorts(api); err != nil {
 		return nil, fmt.Errorf("error suggesting api ports: %w", err)
 	}
 
-	exists, err := k.checkExists(ctx, api.Name)
+	exists, err := a.checkExists(ctx, api.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -255,28 +390,28 @@ func (k *kolm) Create(ctx context.Context, api *v1alpha1.API) (*v1alpha1.API, er
 		return nil, apierrors.NewAlreadyExists(v1alpha1.Resource(v1alpha1.APIResource), api.Name)
 	}
 
-	if err := os.Mkdir(k.itemDirectory(api.Name), 0700); err != nil {
+	if err := os.Mkdir(a.itemDirectory(api.Name), 0700); err != nil {
 		return nil, fmt.Errorf("error creating api directory: %w", err)
 	}
-	if err := k.initCertificates(api.Name, api.Certs); err != nil {
+	if err := a.initCertificates(api.Name); err != nil {
 		return nil, fmt.Errorf("error initializing certificates")
 	}
-	if err := helper.WriteAPIFile(api, k.itemManifestFilename(api.Name)); err != nil {
+	if err := helper.WriteAPIFile(api, a.itemManifestFilename(api.Name)); err != nil {
 		return nil, fmt.Errorf("error writing api file: %w", err)
 	}
 	return api, nil
 }
 
-func (k *kolm) Delete(ctx context.Context, name string) error {
+func (a *apis) Delete(ctx context.Context, name string) error {
 	if name == "" {
 		return fmt.Errorf("must specify name")
 	}
 
-	if _, err := k.Get(ctx, name); err != nil {
+	if _, err := a.Get(ctx, name); err != nil {
 		return err
 	}
 
-	if err := os.RemoveAll(k.itemDirectory(name)); err != nil {
+	if err := os.RemoveAll(a.itemDirectory(name)); err != nil {
 		return fmt.Errorf("error removing api directory: %w", err)
 	}
 	return nil
@@ -287,7 +422,7 @@ type StartOptions struct {
 	Stderr io.Writer
 }
 
-func (k *kolm) Start(ctx context.Context, name string) (Handle, error) {
+func (a *apis) Start(ctx context.Context, name string) (Handle, error) {
 	log := ctrl.LoggerFrom(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -295,7 +430,7 @@ func (k *kolm) Start(ctx context.Context, name string) (Handle, error) {
 	startLog := log.WithName(color.New(color.Bold).Sprint("🛠 setup"))
 
 	startLog.V(1).Info("Getting api definition")
-	api, err := k.Get(ctx, name)
+	api, err := a.Get(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +439,7 @@ func (k *kolm) Start(ctx context.Context, name string) (Handle, error) {
 	startLog.V(1).Info("Starting etcd")
 	etcdLogWriter := logger.NewJSONLogWriter(log.V(2).WithName(color.GreenString("📦 etcd")))
 	e, err := etcd.Start(etcd.Options{
-		Dir:      k.itemDirectory(name),
+		Dir:      a.itemDirectory(name),
 		Host:     api.ETCD.Host,
 		Port:     api.ETCD.Port,
 		PeerHost: api.ETCD.PeerHost,
@@ -313,26 +448,34 @@ func (k *kolm) Start(ctx context.Context, name string) (Handle, error) {
 		Stderr:   etcdLogWriter,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error starting etcd: %w", err)
 	}
 	startLog.V(1).Info("Successfully started etcd")
 
 	startLog.V(1).Info("Starting api server")
 	apiSrvLogWriter := logger.NewKLogLogWriter(log.V(2).WithName(color.BlueString("☸ apiserver")))
 	apiSrv, err := apiserver.Start(apiserver.Options{
-		Dir:                k.itemDirectory(name),
-		ETCDServers:        []string{fmt.Sprintf("http://%s:%d", api.ETCD.Host, api.ETCD.Port)},
-		ServerCertPairName: k.itemServerPairName(name),
-		Host:               api.APIServer.Host,
-		SecurePort:         api.APIServer.Port,
-		Stdout:             apiSrvLogWriter,
-		Stderr:             apiSrvLogWriter,
+		Dir: a.itemDirectory(name),
+
+		ETCDServers: []string{fmt.Sprintf("http://%s:%d", api.ETCD.Host, api.ETCD.Port)},
+
+		CAPairName:                 a.itemCAPairName(name),
+		ServerCertPairName:         a.itemServerPairName(name),
+		ServiceAccountCertPairName: a.itemServiceAccountPairName(name),
+		ProxyCAPairName:            a.itemProxyCAPairName(name),
+		ProxyClientPairName:        a.itemProxyClientPairName(name),
+
+		Host: api.APIServer.Host,
+		Port: api.APIServer.Port,
+
+		Stdout: apiSrvLogWriter,
+		Stderr: apiSrvLogWriter,
 	})
 	if err != nil {
 		if err := e.Stop(); err != nil {
 			startLog.Error(err, "Error stopping etcd")
 		}
-		return nil, err
+		return nil, fmt.Errorf("error starting api server: %w", err)
 	}
 
 	startLog.V(1).Info("Successfully started api server")
@@ -374,21 +517,21 @@ type Handle interface {
 	Stop() error
 }
 
-func (k *kolm) getOrCreateKubeconfigCertificate(api *v1alpha1.API) (caCert *x509.Certificate, certPair *certutil.Pair, err error) {
-	certPair, err = certutil.ReadPairFiles(k.itemKubeconfigPairName(api.Name))
+func (a *apis) getOrCreateKubeconfigCertificate(api *v1alpha1.API) (caCert *x509.Certificate, certPair *certutil.Pair, err error) {
+	certPair, err = certutil.ReadPairFiles(a.itemKubeconfigPairName(api.Name))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, nil, fmt.Errorf("error checking for kubeconfig certificate pair: %w", err)
 		}
 
-		caPair, err := certutil.ReadPairFiles(k.itemCAPairName(api.Name))
+		caPair, err := certutil.ReadPairFiles(a.itemCAPairName(api.Name))
 		if err != nil {
 			return nil, nil, fmt.Errorf("error reading ca certificate pair: %w", err)
 		}
 
 		certPair, err = certutil.GenerateCertificate(caPair, cert.Config{
-			CommonName:   api.Certs.CommonName,
-			Organization: api.Certs.Organization,
+			CommonName:   "admin",
+			Organization: []string{"system:masters"},
 			AltNames: cert.AltNames{
 				DNSNames: []string{"localhost"},
 				IPs:      []net.IP{net.ParseIP("127.0.0.1")},
@@ -399,14 +542,14 @@ func (k *kolm) getOrCreateKubeconfigCertificate(api *v1alpha1.API) (caCert *x509
 			return nil, nil, fmt.Errorf("error generating kubeconfig certificate: %w", err)
 		}
 
-		if err := certutil.WritePairFiles(certPair, k.itemKubeconfigPairName(api.Name)); err != nil {
+		if err := certutil.WritePairFiles(certPair, a.itemKubeconfigPairName(api.Name)); err != nil {
 			return nil, nil, fmt.Errorf("error writing kubeconfig certificate pair: %w", err)
 		}
 
 		return caPair.Cert, certPair, nil
 	}
 
-	caCert, err = certutil.ReadCertificateFile(k.itemCAPairName(api.Name))
+	caCert, err = certutil.ReadCertificateFile(a.itemCAPairName(api.Name))
 	if err != nil {
 		return nil, nil, fmt.Errorf("error reading ca certificate: %w", err)
 	}
@@ -418,13 +561,13 @@ const (
 	DefaultName = "kolm"
 )
 
-func (k *kolm) Kubeconfig(ctx context.Context, name string) (*clientcmdapi.Config, error) {
-	api, err := k.Get(ctx, name)
+func (a *apis) Kubeconfig(ctx context.Context, name string) (*clientcmdapi.Config, error) {
+	api, err := a.Get(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 
-	caCert, certPair, err := k.getOrCreateKubeconfigCertificate(api)
+	caCert, certPair, err := a.getOrCreateKubeconfigCertificate(api)
 	if err != nil {
 		return nil, fmt.Errorf("error getting / creating kubeconfig certificate: %w", err)
 	}
@@ -433,8 +576,165 @@ func (k *kolm) Kubeconfig(ctx context.Context, name string) (*clientcmdapi.Confi
 	return kubeconfigs.New(name, server, caCert, certPair)
 }
 
-func Export(ctx context.Context, k Kolm, name string, kubeCfg *clientcmdapi.Config) (*clientcmdapi.Config, error) {
-	override, err := k.Kubeconfig(ctx, name)
+func (a *apis) HostCertificate(ctx context.Context, name string) (*certutil.Pair, error) {
+	if _, err := a.Get(ctx, name); err != nil {
+		return nil, err
+	}
+
+	return certutil.ReadPairFiles(a.itemHostPairName(name))
+}
+
+func (a *apis) HostKeyFilename(ctx context.Context, name string) (string, error) {
+	if _, err := a.Get(ctx, name); err != nil {
+		return "", err
+	}
+	return a.itemHostPairName(name) + ".key", nil
+}
+
+func (a *apis) HostCertificateFilename(ctx context.Context, name string) (string, error) {
+	if _, err := a.Get(ctx, name); err != nil {
+		return "", err
+	}
+	return a.itemHostPairName(name) + ".crt", nil
+}
+
+func (a *apis) APIServices(name string) APIServices {
+	return &apiAPIServices{
+		apis: *a,
+		name: name,
+	}
+}
+
+type apiAPIServices struct {
+	apis apis
+	name string
+}
+
+func (a *apiAPIServices) Apply(ctx context.Context, svcName, host string, port int32, apiServices []*apiregistrationv1.APIService) error {
+	c, err := a.getClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	aggregatedServiceCAPair, err := certutil.ReadPairFiles(a.apis.itemHostCAPairName(a.name))
+	if err != nil {
+		return fmt.Errorf("error reading aggregated service ca certificate: %w", err)
+	}
+
+	aggregatedServiceCABytes, err := aggregatedServiceCAPair.CertBytes()
+	if err != nil {
+		return fmt.Errorf("error getting aggregated service ca bytes: %w", err)
+	}
+
+	svc := &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       "Service",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: metav1.NamespaceSystem,
+			Name:      svcName,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:         corev1.ServiceTypeExternalName,
+			ExternalName: host,
+		},
+	}
+	if err := c.Patch(ctx, svc, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+		return fmt.Errorf("error applying service %s: %w", svcName, err)
+	}
+
+	for _, apiService := range apiServices {
+		apiService.TypeMeta = metav1.TypeMeta{
+			APIVersion: apiregistrationv1.SchemeGroupVersion.String(),
+			Kind:       "APIService",
+		}
+		_, err := ctrl.CreateOrUpdate(ctx, c, apiService, func() error {
+			metav1.SetMetaDataLabel(&apiService.ObjectMeta, serviceOwnerLabel, string(svc.UID))
+			apiService.Spec.CABundle = aggregatedServiceCABytes
+			apiService.Spec.Service = &apiregistrationv1.ServiceReference{
+				Namespace: metav1.NamespaceSystem,
+				Name:      svcName,
+				Port:      pointer.Int32(port),
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("[apiservice %s] error applying: %w", apiService.Name, err)
+		}
+	}
+	return nil
+}
+
+func (a *apiAPIServices) Delete(ctx context.Context, svcName string) error {
+	c, err := a.getClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	svc := &corev1.Service{}
+	svcKey := client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: svcName}
+	if err := c.Get(ctx, svcKey, svc); err != nil {
+		return fmt.Errorf("error getting service %s: %w", svcName, err)
+	}
+
+	apiServiceList := &apiregistrationv1.APIServiceList{}
+	if err := c.List(ctx, apiServiceList,
+		client.MatchingLabels{
+			serviceOwnerLabel: string(svc.UID),
+		},
+	); err != nil {
+		return fmt.Errorf("error listing api services for service %s: %w", svcName, err)
+	}
+
+	var errs []error
+	for _, apiService := range apiServiceList.Items {
+		if err := c.Delete(ctx, &apiService); client.IgnoreNotFound(err) != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("error(s) deleting api services: %v", errs)
+	}
+
+	if err := c.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("error deleting service %s: %w", svcName, err)
+	}
+	return nil
+}
+
+func (a *apiAPIServices) getClient(ctx context.Context) (client.Client, error) {
+	kubeCfg, err := a.apis.Kubeconfig(ctx, a.name)
+	if err != nil {
+		return nil, fmt.Errorf("error obtaining kubeconfig: %w", err)
+	}
+
+	restCfg, err := clientcmd.NewDefaultClientConfig(*kubeCfg, nil).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("error getting rest config: %w", err)
+	}
+
+	c, err := client.New(restCfg, client.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("error creating client: %w", err)
+	}
+	return c, nil
+}
+
+func ExportHostCertificate(ctx context.Context, apis APIs, name string, dir string) error {
+	pair, err := apis.HostCertificate(ctx, name)
+	if err != nil {
+		return fmt.Errorf("error getting host service certificate: %w", err)
+	}
+
+	if err := certutil.WritePairFiles(pair, filepath.Join(dir, "tls")); err != nil {
+		return fmt.Errorf("error writing pair files: %w", err)
+	}
+	return nil
+}
+
+func ExportKubeconfig(ctx context.Context, apis APIs, name string, kubeCfg *clientcmdapi.Config) (*clientcmdapi.Config, error) {
+	override, err := apis.Kubeconfig(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +742,7 @@ func Export(ctx context.Context, k Kolm, name string, kubeCfg *clientcmdapi.Conf
 	return kubeconfigs.Merge(kubeCfg, override)
 }
 
-func ExportFile(ctx context.Context, k Kolm, name, filename string) error {
+func ExportKubeconfigFile(ctx context.Context, apis APIs, name, filename string) error {
 	kubeCfg, err := clientcmd.LoadFromFile(filename)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -452,7 +752,7 @@ func ExportFile(ctx context.Context, k Kolm, name, filename string) error {
 		kubeCfg = clientcmdapi.NewConfig()
 	}
 
-	kubeCfg, err = Export(ctx, k, name, kubeCfg)
+	kubeCfg, err = ExportKubeconfig(ctx, apis, name, kubeCfg)
 	if err != nil {
 		return fmt.Errorf("error exporting kubeconfig: %w", err)
 	}
@@ -460,12 +760,12 @@ func ExportFile(ctx context.Context, k Kolm, name, filename string) error {
 	return clientcmd.WriteToFile(*kubeCfg, filename)
 }
 
-type RunOptions struct {
+type RunAPIOptions struct {
 	Remove             bool
 	KubeconfigFilename string
 }
 
-func Run(ctx context.Context, k Kolm, api *v1alpha1.API, opts RunOptions) error {
+func RunAPI(ctx context.Context, apis APIs, api *v1alpha1.API, opts RunAPIOptions) error {
 	log := ctrl.LoggerFrom(ctx)
 	var cleanup []func()
 	defer func() {
@@ -474,19 +774,19 @@ func Run(ctx context.Context, k Kolm, api *v1alpha1.API, opts RunOptions) error 
 		}
 	}()
 
-	api, err := k.Create(ctx, api)
+	api, err := apis.Create(ctx, api)
 	if err != nil {
 		return fmt.Errorf("error creating api: %w", err)
 	}
 	if opts.Remove {
 		cleanup = append(cleanup, func() {
-			if err := k.Delete(ctx, api.Name); err != nil {
+			if err := apis.Delete(ctx, api.Name); err != nil {
 				log.Error(err, "Error deleting api after start failed")
 			}
 		})
 	}
 
-	handle, err := k.Start(ctx, api.Name)
+	handle, err := apis.Start(ctx, api.Name)
 	if err != nil {
 		return err
 	}
@@ -496,7 +796,7 @@ func Run(ctx context.Context, k Kolm, api *v1alpha1.API, opts RunOptions) error 
 		}
 	})
 
-	if err := ExportFile(ctx, k, api.Name, opts.KubeconfigFilename); err != nil {
+	if err := ExportKubeconfigFile(ctx, apis, api.Name, opts.KubeconfigFilename); err != nil {
 		return fmt.Errorf("error exporting kubeconfig: %w", err)
 	}
 	if opts.Remove {

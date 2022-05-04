@@ -12,31 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package api
+package hostcert
 
 import (
 	"context"
 
-	kolm "github.com/onmetal/kolm"
+	"github.com/onmetal/kolm"
 	"github.com/onmetal/kolm/cli/kolm/common"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 type Options struct {
+	Dir  string
 	Name string
 }
 
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api to start")
+	fs.StringVar(&o.Dir, "dir", "", "The directory to write the tls.key and tls.crt to.")
+	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api.")
 }
 
 func Command(getKolm common.GetKolm) *cobra.Command {
 	var opts Options
 
 	cmd := &cobra.Command{
-		Use:   "api",
-		Short: "Start a local Kubernetes API.",
+		Use:   "host-cert",
+		Short: "Export host certificates to a target directory.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -55,12 +57,5 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 }
 
 func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
-	handle, err := k.APIs().Start(ctx, opts.Name)
-	if err != nil {
-		return err
-	}
-
-	<-ctx.Done()
-
-	return handle.Stop()
+	return kolm.ExportHostCertificate(ctx, k.APIs(), opts.Name, opts.Dir)
 }

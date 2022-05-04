@@ -12,42 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package kubeconfig
+package apiservices
 
 import (
 	"context"
 	"fmt"
 
-	kolm "github.com/onmetal/kolm"
+	"github.com/onmetal/kolm"
+	"github.com/onmetal/kolm/apiservices"
 	"github.com/onmetal/kolm/cli/kolm/common"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 type Options struct {
-	Name string
+	APIName string
+	Name    string
+	Host    string
+	Port    int32
 }
 
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the api to get the kubeconfig from.")
+	fs.StringVarP(&o.APIName, "api-name", "a", kolm.DefaultName, "Name of the api whose API services to modify.")
+	fs.StringVar(&o.Name, "name", kolm.DefaultName, "Name of the service owner to create.")
+	fs.StringVar(&o.Host, "host", "localhost", "Host where the aggregated service will be running.")
+	fs.Int32Var(&o.Port, "port", 6443, "Port the aggregated service is running on.")
 }
 
 func Command(getKolm common.GetKolm) *cobra.Command {
 	var opts Options
 
 	cmd := &cobra.Command{
-		Use:   "kubeconfig",
-		Short: "Get the kubeconfig of a local Kubernetes API.",
+		Args: cobra.MinimumNArgs(1),
+		Use:  "apiservices <paths...>",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			l, err := getKolm()
+			k, err := getKolm()
 			if err != nil {
 				return err
 			}
 
-			return Run(ctx, l, opts)
+			return Run(ctx, k, args, opts)
 		},
 	}
 
@@ -56,17 +62,18 @@ func Command(getKolm common.GetKolm) *cobra.Command {
 	return cmd
 }
 
-func Run(ctx context.Context, k kolm.Kolm, opts Options) error {
-	kubeconfig, err := k.APIs().Kubeconfig(ctx, opts.Name)
+func Run(ctx context.Context, k kolm.Kolm, paths []string, opts Options) error {
+	apiServices, err := apiservices.Render(apiservices.RenderOptions{
+		Paths:              paths,
+		ErrorIfPathMissing: false,
+	})
 	if err != nil {
-		return fmt.Errorf("error getting kubeconfig: %w", err)
+		return fmt.Errorf("error rendering api services: %w", err)
 	}
 
-	data, err := clientcmd.Write(*kubeconfig)
-	if err != nil {
-		return fmt.Errorf("error encoding kubeconfig: %w", err)
+	if err := k.APIs().APIServices(opts.APIName).Apply(ctx, opts.Name, opts.Host, opts.Port, apiServices); err != nil {
+		return fmt.Errorf("error applying api services: %w", err)
 	}
 
-	fmt.Println(string(data))
 	return nil
 }
