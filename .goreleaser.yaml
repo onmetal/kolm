@@ -2,6 +2,7 @@ project_name: github.com/onmetal/kolm
 builds:
   - env:
       - CGO_ENABLED=0
+    main: ./cmd/kolm
     goos:
       - linux
       - windows
