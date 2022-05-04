@@ -8,7 +8,7 @@ kolm is a tool for running a Kubernetes 'cluster' consisting of an `etcd` and a 
 machine. The primary use of kolm is for testing aggregated api servers, as debugging aggregated api servers
 in-cluster is a complex and troublesome task.
 
-> :danger: kolm is a *testing-only* tool. Practices employed in this tool are inherently unsafe and should
+> ⚠️ kolm is a *testing-only* tool. Practices employed in this tool are inherently unsafe and should
 > never be used in production and is plumbing-only.
 
 ## Installation
@@ -18,6 +18,10 @@ To install kolm, simply run
 ```shell
 go install github.com/onmetal/kolm/cmd/kolm@latest
 ```
+
+> 👆 For now, kolm also requires `etcd` and `kube-apiserver` to be on your path.
+> This will change in the future with automated binary management but wasn't implemented
+> in the initial scope.
 
 ## Usage
 
