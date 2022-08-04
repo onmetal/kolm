@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -62,8 +61,21 @@ func Render(options RenderOptions) ([]*apiregistrationv1.APIService, error) {
 
 		if !info.IsDir() {
 			filePath, files = filepath.Dir(path), []os.FileInfo{info}
-		} else if files, err = ioutil.ReadDir(path); err != nil {
-			return nil, err
+		} else {
+			dirEntries, err := os.ReadDir(path)
+			if err != nil {
+				return nil, err
+			}
+
+			files = make([]os.FileInfo, 0, len(dirEntries))
+			for _, dirEntry := range dirEntries {
+				file, err := dirEntry.Info()
+				if err != nil {
+					return nil, err
+				}
+
+				files = append(files, file)
+			}
 		}
 
 		apiServiceList, err := readAPIServices(filePath, files)
